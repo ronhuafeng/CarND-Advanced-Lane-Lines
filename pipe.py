@@ -71,6 +71,8 @@ def find_window_centroids(image, window_width, window_height, margin):
 
     # Add what we found for the first layer
     window_centroids.append((l_center, r_center))
+    left_centroids = [l_center]
+    right_centroids = [r_center]
 
     # Go through each layer looking for max pixel locations
     for level in range(1, (int)(image.shape[0] / window_height)):
@@ -85,15 +87,26 @@ def find_window_centroids(image, window_width, window_height, margin):
         offset = window_width / 2
         l_min_index = int(max(l_center + offset - margin, 0))
         l_max_index = int(min(l_center + offset + margin, image.shape[1]))
-        l_center = np.argmax(conv_signal[l_min_index:l_max_index]) + l_min_index - offset
+        l_argmax = np.argmax(conv_signal[l_min_index:l_max_index])
+        l_center = l_argmax + l_min_index - offset
+
+        if conv_signal[l_argmax + l_min_index] > 100:
+            left_centroids.append(l_center)
+
         # Find the best right centroid by using past right center as a reference
         r_min_index = int(max(r_center + offset - margin, 0))
         r_max_index = int(min(r_center + offset + margin, image.shape[1]))
-        r_center = np.argmax(conv_signal[r_min_index:r_max_index]) + r_min_index - offset
-        # Add what we found for that layer
-        window_centroids.append((l_center, r_center))
+        r_argmax = np.argmax(conv_signal[r_min_index:r_max_index])
+        r_center = r_argmax + r_min_index - offset
 
-    return window_centroids
+        if conv_signal[r_argmax + r_min_index] > 100:
+            right_centroids.append(r_center)
+
+        # Add what we found for that layer
+        # print('l max', l_argmax + l_min_index, conv_signal[l_argmax + l_min_index],
+        #       'r max', r_argmax + r_min_index, conv_signal[r_argmax + r_min_index])
+        window_centroids.append((l_center, r_center))
+    return window_centroids, left_centroids, right_centroids
 
 
 def pipe_warped2data(warped, window_width=50, window_height=80, margin=100):
@@ -101,7 +114,7 @@ def pipe_warped2data(warped, window_width=50, window_height=80, margin=100):
     # window_height = 80  # Break image into 9 vertical layers since image height is 720
     # margin = 100  # How much to slide left and right for searching
 
-    window_centroids = find_window_centroids(warped, window_width, window_height, margin)
+    window_centroids, left_centroids, right_centroids = find_window_centroids(warped, window_width, window_height, margin)
 
     # If we found any window centers
     if len(window_centroids) > 0:
@@ -132,22 +145,24 @@ def pipe_warped2data(warped, window_width=50, window_height=80, margin=100):
 
     ################## polyfit ################
 
-    l_points = np.array([])
     r_points = np.array([])
-    h_points = np.array([])
+    l_points = np.array([])
+    h_left_points = np.array([])
+    h_right_points = np.array([])
 
-    for p in window_centroids:
-        l_points = np.append(l_points, p[0])
-        r_points = np.append(r_points, p[1])
+    for level, p in enumerate(left_centroids):
+        l_points = np.append(l_points, p)
+        h_left_points = np.append(h_left_points, warped.shape[0] - (level + 0.5) * window_height)
 
-    for level in range(0, len(window_centroids)):
-        h_points = np.append(h_points, warped.shape[0] - (level + 0.5) * window_height)
+    for level, p in enumerate(right_centroids):
+        r_points = np.append(r_points, p)
+        h_right_points = np.append(h_right_points, warped.shape[0] - (level + 0.5) * window_height)
 
     # print(l_points, r_points, h_points)
 
     # Fit a second order polynomial to each
-    left_fit = np.polyfit(h_points, l_points, 2)
-    right_fit = np.polyfit(h_points, r_points, 2)
+    left_fit = np.polyfit(h_left_points, l_points, 2)
+    right_fit = np.polyfit(h_right_points, r_points, 2)
 
     ploty = np.linspace(
         start=0,
@@ -199,6 +214,31 @@ def region_of_interest(img, vertices):
         ignore_mask_color = (255,) * channel_count
     else:
         ignore_mask_color = 255
+
+    # filling pixels inside the polygon defined by "vertices" with the fill color
+    cv2.fillPoly(mask, vertices, ignore_mask_color)
+
+    # returning the image only where mask pixels are nonzero
+    masked_image = cv2.bitwise_and(img, mask)
+    return masked_image
+
+
+def region_of_uninterest(img, vertices):
+    """
+    Applies an image mask.
+
+    Only keeps the region of the image defined by the polygon
+    formed from `vertices`. The rest of the image is set to black.
+    """
+    # defining a blank mask to start with
+    mask = np.ones_like(img)
+
+    # defining a 3 channel or 1 channel color to fill the mask with depending on the input image
+    if len(img.shape) > 2:
+        channel_count = img.shape[2]  # i.e. 3 or 4 depending on your image
+        ignore_mask_color = (0,) * channel_count
+    else:
+        ignore_mask_color = 0
 
     # filling pixels inside the polygon defined by "vertices" with the fill color
     cv2.fillPoly(mask, vertices, ignore_mask_color)
