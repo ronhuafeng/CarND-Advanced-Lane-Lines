@@ -1,18 +1,28 @@
 import numpy as np
 import cv2
 
+# This pipeline should work correctly on different images.
+# Found issues:
+# 1. results after HLS space transformation may differ on images read by cv2 and matplotlib.pyplot
+
 
 def pipe_distort2undistort(img, mtx, dist):
-    undist = cv2.undistort(img, mtx, dist, None, mtx)
-    return undist
+    return cv2.undistort(img, mtx, dist, None, mtx)
 
 
-def pipeline(img, s_thresh=(170, 255), sx_thresh=(20, 100)):
+def pipeline(img, sx_thresh=(20, 100)):
     img = np.copy(img)
     # Convert to HLS color space and separate the V channel
     hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
+    h_channel = hls[:, :, 0]
     l_channel = hls[:, :, 1]
     s_channel = hls[:, :, 2]
+
+    # Filter values from other blogs:
+    # https://medium.com/@tjosh.owoyemi/finding-lane-lines-with-colour-thresholds-beb542e0d839
+    # https://towardsdatascience.com/finding-lane-lines-on-the-road-30cf016a1165
+    yellow_hls_low = np.array([20, 120, 100])
+    yellow_hls_high = np.array([40, 200, 255])
 
     # Sobel x
     sobelx = cv2.Sobel(l_channel, cv2.CV_64F, 1, 0)  # Take the derivative in x
@@ -24,21 +34,29 @@ def pipeline(img, s_thresh=(170, 255), sx_thresh=(20, 100)):
     sxbinary[(scaled_sobel >= sx_thresh[0]) & (scaled_sobel <= sx_thresh[1])] = 1
 
     # Threshold color channel
-    s_binary = np.zeros_like(s_channel)
-    s_binary[(s_channel >= s_thresh[0]) & (s_channel <= s_thresh[1])] = 1
+    hls_yellow = np.zeros_like(h_channel)
+    hls_yellow[(h_channel >= yellow_hls_low[0]) & (h_channel <= yellow_hls_high[0]) &
+               (s_channel >= yellow_hls_low[2])] = 1  # use higher s channel to filter yellow hills
+
+    hls_white = np.zeros_like(l_channel)
+    hls_white[l_channel > 180] = 1
+
+    hls_binary = np.zeros_like(l_channel)
+    hls_binary[(hls_yellow == 1) | (hls_white == 1)] = 1
+
     # Stack each channel
     # color_binary = np.dstack(( np.zeros_like(sxbinary), sxbinary, s_binary)) * 255
     color_binary = np.dstack((np.zeros_like(sxbinary), sxbinary, np.zeros_like(sxbinary))) * 255
 
     combined_binary = np.zeros_like(sxbinary)
-    combined_binary[(s_binary == 1) | (sxbinary == 1)] = 1
+    combined_binary[(hls_binary == 1) | (sxbinary == 1)] = 1
 
     return color_binary, combined_binary
 
 
 def pipe_undistort2edges(img_undistort):
-    color_binary, sxbinary = pipeline(img_undistort, s_thresh=(170, 255), sx_thresh=(20, 100))
-    return sxbinary
+    color_binary, combined_binary = pipeline(img_undistort, sx_thresh=(20, 100))
+    return combined_binary
 
 
 def pipe_edges2warped(img_edges, src, dst):
@@ -75,7 +93,7 @@ def find_window_centroids(image, window_width, window_height, margin):
     right_centroids = [r_center]
 
     # Go through each layer looking for max pixel locations
-    for level in range(1, (int)(image.shape[0] / window_height)):
+    for level in range(1, int(image.shape[0] / window_height)):
         # convolve the window into the vertical slice of the image
         image_layer = np.sum(
             image[int(image.shape[0] - (level + 1) * window_height):int(image.shape[0] - level * window_height), :],
