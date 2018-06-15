@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 
+
 # This pipeline should work correctly on different images.
 # Found issues:
 # 1. results after HLS space transformation may differ on images read by cv2 and matplotlib.pyplot
@@ -39,7 +40,7 @@ def pipeline(img, sx_thresh=(20, 100)):
                (s_channel >= yellow_hls_low[2])] = 1  # use higher s channel to filter yellow hills
 
     hls_white = np.zeros_like(l_channel)
-    hls_white[l_channel > 180] = 1
+    hls_white[l_channel > 200] = 1
 
     hls_binary = np.zeros_like(l_channel)
     hls_binary[(hls_yellow == 1) | (hls_white == 1)] = 1
@@ -51,7 +52,7 @@ def pipeline(img, sx_thresh=(20, 100)):
     combined_binary = np.zeros_like(sxbinary)
     combined_binary[(hls_binary == 1) | (sxbinary == 1)] = 1
 
-    return color_binary, combined_binary
+    return color_binary, hls_binary
 
 
 def pipe_undistort2edges(img_undistort):
@@ -89,8 +90,8 @@ def find_window_centroids(image, window_width, window_height, margin):
 
     # Add what we found for the first layer
     window_centroids.append((l_center, r_center))
-    left_centroids = [l_center]
-    right_centroids = [r_center]
+    left_centroids = [(l_center, 0)]
+    right_centroids = [(r_center, 0)]
 
     # Go through each layer looking for max pixel locations
     for level in range(1, int(image.shape[0] / window_height)):
@@ -106,19 +107,19 @@ def find_window_centroids(image, window_width, window_height, margin):
         l_min_index = int(max(l_center + offset - margin, 0))
         l_max_index = int(min(l_center + offset + margin, image.shape[1]))
         l_argmax = np.argmax(conv_signal[l_min_index:l_max_index])
-        l_center = l_argmax + l_min_index - offset
 
         if conv_signal[l_argmax + l_min_index] > 100:
-            left_centroids.append(l_center)
+            l_center = l_argmax + l_min_index - offset
+            left_centroids.append((l_center, level))
 
         # Find the best right centroid by using past right center as a reference
         r_min_index = int(max(r_center + offset - margin, 0))
         r_max_index = int(min(r_center + offset + margin, image.shape[1]))
         r_argmax = np.argmax(conv_signal[r_min_index:r_max_index])
-        r_center = r_argmax + r_min_index - offset
 
         if conv_signal[r_argmax + r_min_index] > 100:
-            right_centroids.append(r_center)
+            r_center = r_argmax + r_min_index - offset
+            right_centroids.append((r_center, level))
 
         # Add what we found for that layer
         # print('l max', l_argmax + l_min_index, conv_signal[l_argmax + l_min_index],
@@ -132,7 +133,8 @@ def pipe_warped2data(warped, window_width=50, window_height=80, margin=100):
     # window_height = 80  # Break image into 9 vertical layers since image height is 720
     # margin = 100  # How much to slide left and right for searching
 
-    window_centroids, left_centroids, right_centroids = find_window_centroids(warped, window_width, window_height, margin)
+    window_centroids, left_centroids, right_centroids = find_window_centroids(warped, window_width, window_height,
+                                                                              margin)
 
     # If we found any window centers
     if len(window_centroids) > 0:
@@ -168,11 +170,15 @@ def pipe_warped2data(warped, window_width=50, window_height=80, margin=100):
     h_left_points = np.array([])
     h_right_points = np.array([])
 
-    for level, p in enumerate(left_centroids):
+    # print('left')
+    for (p, level) in left_centroids:
+        # print(p, level)
         l_points = np.append(l_points, p)
         h_left_points = np.append(h_left_points, warped.shape[0] - (level + 0.5) * window_height)
 
-    for level, p in enumerate(right_centroids):
+    # print('right')
+    for (p, level) in right_centroids:
+        # print(p, level)
         r_points = np.append(r_points, p)
         h_right_points = np.append(h_right_points, warped.shape[0] - (level + 0.5) * window_height)
 
@@ -190,7 +196,7 @@ def pipe_warped2data(warped, window_width=50, window_height=80, margin=100):
     left_fitx = left_fit[0] * ploty ** 2 + left_fit[1] * ploty + left_fit[2]
     right_fitx = right_fit[0] * ploty ** 2 + right_fit[1] * ploty + right_fit[2]
 
-    return output, ploty, left_fitx, right_fitx
+    return output, ploty, left_fitx, right_fitx, left_fit, right_fit
 
 
 def pipe_warped2origin(warped, undist, ploty, left_fitx, right_fitx, src, dst):
@@ -264,3 +270,44 @@ def region_of_uninterest(img, vertices):
     # returning the image only where mask pixels are nonzero
     masked_image = cv2.bitwise_and(img, mask)
     return masked_image
+
+
+def smooth_line(last_fits: list, fit, thresh=50):
+    if len(last_fits) < 3:
+        last_fits.append(fit)
+    else:
+        avg = sum([v[2] for v in last_fits]) / len(last_fits)
+        if abs(fit[2] - avg) < thresh:
+            last_fits.append(fit)
+
+    if len(last_fits) > 3:
+        last_fits = last_fits[-3:]
+    return last_fits
+
+
+def compute_curverad(left_fitx, right_fitx, ploty):
+    # Define conversions in x and y from pixels space to meters
+    ym_per_pix = 30 / 720  # meters per pixel in y dimension
+    xm_per_pix = 3.7 / 700  # meters per pixel in x dimension
+
+    # Fit new polynomials to x,y in world space
+    left_fit_cr = np.polyfit(ploty * ym_per_pix, left_fitx * xm_per_pix, 2)
+    right_fit_cr = np.polyfit(ploty * ym_per_pix, right_fitx * xm_per_pix, 2)
+    # Calculate the new radii of curvature
+
+    y_eval = np.min(ploty)
+
+    left_curverad = ((1 + (2 * left_fit_cr[0] * y_eval * ym_per_pix + left_fit_cr[1]) ** 2) ** 1.5) / np.absolute(
+        2 * left_fit_cr[0])
+    right_curverad = ((1 + (2 * right_fit_cr[0] * y_eval * ym_per_pix + right_fit_cr[1]) ** 2) ** 1.5) / np.absolute(
+        2 * right_fit_cr[0])
+    # Now our radius of curvature is in meters
+    return left_curverad, right_curverad
+
+def draw_curverad(image, left_curverad, right_curverad):
+    font = cv2.FONT_HERSHEY_TRIPLEX
+    cv2.putText(image, 'left_curverad %f m' % (left_curverad),
+                (100, 100), font, 1.5, (255, 255, 255), 5, True)
+    cv2.putText(image, 'right_curverad %f m' % (right_curverad),
+                (100, 200), font, 1.5, (255, 255, 255), 5, True)
+    return image
