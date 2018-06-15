@@ -285,7 +285,7 @@ def smooth_line(last_fits: list, fit, thresh=50):
     return last_fits
 
 
-def compute_curverad(left_fitx, right_fitx, ploty):
+def compute_curverad_offset(left_fitx, right_fitx, ploty):
     # Define conversions in x and y from pixels space to meters
     ym_per_pix = 30 / 720  # meters per pixel in y dimension
     xm_per_pix = 3.7 / 700  # meters per pixel in x dimension
@@ -302,12 +302,18 @@ def compute_curverad(left_fitx, right_fitx, ploty):
     right_curverad = ((1 + (2 * right_fit_cr[0] * y_eval * ym_per_pix + right_fit_cr[1]) ** 2) ** 1.5) / np.absolute(
         2 * right_fit_cr[0])
     # Now our radius of curvature is in meters
-    return left_curverad, right_curverad
 
-def draw_curverad(image, left_curverad, right_curverad):
+    offset = (left_fitx[-1] + right_fitx[-1]) // 2 - 600
+
+    return left_curverad, right_curverad, offset*xm_per_pix
+
+
+def draw_curverad_offset(image, left_curverad, right_curverad, offset):
     font = cv2.FONT_HERSHEY_TRIPLEX
     cv2.putText(image, 'left_curverad %f m' % (left_curverad),
                 (100, 100), font, 1.5, (255, 255, 255), 5, True)
     cv2.putText(image, 'right_curverad %f m' % (right_curverad),
                 (100, 200), font, 1.5, (255, 255, 255), 5, True)
+    cv2.putText(image, 'offset to center %f m' % (offset),
+                (100, 300), font, 1.5, (255, 255, 255), 5, True)
     return image
